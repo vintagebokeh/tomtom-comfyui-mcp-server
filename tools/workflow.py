@@ -4,6 +4,7 @@ import logging
 from typing import Any, Dict, Optional
 
 from mcp.server.fastmcp import FastMCP
+from managers.live_canvas import latest_saved_canvas, queue_canvas_states
 from managers.workflow_graph import WorkflowGraphInspector
 from tools.helpers import register_and_build_response
 
@@ -32,6 +33,80 @@ def register_workflow_tools(
             "count": len(catalog),
             "workflow_dir": str(workflow_manager.workflows_dir)
         }
+
+    @mcp.tool()
+    def get_live_canvas_state(include_nodes: bool = True, fallback_to_latest_saved: bool = True) -> dict:
+        """Read the current ComfyUI-visible canvas graph state.
+
+        This is read-only. If ComfyUI is running or queueing a prompt, the tool
+        returns graph data from the live queue payload. ComfyUI does not expose
+        the currently open editor DOM/canvas through its normal HTTP API, so
+        when the queue is idle this falls back to the most recently saved
+        workflow and marks the source clearly.
+
+        Args:
+            include_nodes: Include compact node briefs in the graph payload.
+            fallback_to_latest_saved: Return the latest saved workflow graph
+                when no running/queued prompt graph is available.
+        """
+        try:
+            queue_data = comfyui_client.get_queue()
+            canvases = queue_canvas_states(queue_data, include_nodes=include_nodes)
+        except Exception as e:
+            logger.warning("Failed to read ComfyUI queue for live canvas state: %s", e)
+            queue_data = {}
+            canvases = []
+
+        if canvases:
+            return {
+                "status": "success",
+                "source": "comfyui_queue",
+                "is_live_ui_canvas": False,
+                "is_live_execution_graph": True,
+                "message": "Read live graph data from ComfyUI running/pending queue.",
+                "running_count": len(queue_data.get("queue_running", [])) if isinstance(queue_data, dict) else None,
+                "pending_count": len(queue_data.get("queue_pending", [])) if isinstance(queue_data, dict) else None,
+                "canvases": canvases,
+            }
+
+        if fallback_to_latest_saved:
+            saved_canvas = latest_saved_canvas(workflow_manager, include_nodes=include_nodes)
+            if saved_canvas:
+                return {
+                    "status": "success",
+                    "source": "latest_saved_workflow",
+                    "is_live_ui_canvas": False,
+                    "is_live_execution_graph": False,
+                    "message": (
+                        "No running or pending prompt graph is available. "
+                        "ComfyUI's HTTP API does not expose the unsaved editor canvas, "
+                        "so this returns the most recently saved workflow."
+                    ),
+                    "canvases": [saved_canvas],
+                }
+
+        return {
+            "status": "unavailable",
+            "source": "none",
+            "is_live_ui_canvas": False,
+            "is_live_execution_graph": False,
+            "message": (
+                "No running/pending prompt graph was available, and no saved workflow "
+                "fallback was returned. To inspect the editor canvas itself, ComfyUI "
+                "needs a frontend/plugin bridge or browser automation layer."
+            ),
+            "canvases": [],
+        }
+
+    @mcp.tool()
+    def get_current_canvas_graph(include_nodes: bool = True, fallback_to_latest_saved: bool = True) -> dict:
+        """Alias for get_live_canvas_state."""
+        return get_live_canvas_state(include_nodes=include_nodes, fallback_to_latest_saved=fallback_to_latest_saved)
+
+    @mcp.tool()
+    def read_live_canvas(include_nodes: bool = True, fallback_to_latest_saved: bool = True) -> dict:
+        """Alias for get_live_canvas_state."""
+        return get_live_canvas_state(include_nodes=include_nodes, fallback_to_latest_saved=fallback_to_latest_saved)
 
     @mcp.tool()
     def inspect_workflow_graph(workflow_id: str, include_nodes: bool = True) -> dict:
