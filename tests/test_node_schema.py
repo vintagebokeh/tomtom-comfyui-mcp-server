@@ -87,3 +87,22 @@ def test_validate_workflow_against_schemas_catches_required_and_range_errors():
     assert "VALUE_BELOW_MIN" in errors
     assert "REQUIRED_INPUT_MISSING" in errors
     assert "NODE_CLASS_NOT_FOUND" in errors
+
+
+def test_validate_workflow_reports_ui_metadata_separately():
+    workflow = {
+        "1": {
+            "class_type": "LoadAudio",
+            "inputs": {
+                "audio": "a.wav",
+                "audioUI": {"expanded": True},
+            },
+        },
+    }
+
+    validation = validate_workflow_against_schemas(workflow, object_info())
+
+    assert validation["valid"] is True
+    assert validation["warnings"] == []
+    assert validation["ui_metadata_count"] == 1
+    assert validation["ui_metadata_inputs"][0]["input_name"] == "audioUI"

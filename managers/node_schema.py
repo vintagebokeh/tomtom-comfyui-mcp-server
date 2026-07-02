@@ -6,6 +6,7 @@ from typing import Any, Dict, Iterable, List, Optional
 
 
 INPUT_SECTIONS = ("required", "optional", "hidden")
+UI_METADATA_INPUT_NAMES = frozenset({"audioUI", "imageUI", "videoUI", "widgets_values"})
 
 
 def normalize_node_schema(class_type: str, object_info: Dict[str, Any]) -> Dict[str, Any]:
@@ -69,6 +70,7 @@ def validate_workflow_against_schemas(workflow: Dict[str, Any], object_info: Dic
     """Basic schema-aware validation for node classes and declared inputs."""
     errors: List[Dict[str, Any]] = []
     warnings: List[Dict[str, Any]] = []
+    ui_metadata_inputs: List[Dict[str, Any]] = []
 
     for node_id, node in _iter_nodes(workflow):
         class_type = str(node.get("class_type", ""))
@@ -101,6 +103,16 @@ def validate_workflow_against_schemas(workflow: Dict[str, Any], object_info: Dic
         for input_name, value in actual_inputs.items():
             input_schema = declared_inputs.get(input_name)
             if not input_schema:
+                if input_name in UI_METADATA_INPUT_NAMES:
+                    ui_metadata_inputs.append(
+                        {
+                            "node_id": node_id,
+                            "class_type": class_type,
+                            "input_name": input_name,
+                            "value_type": type(value).__name__,
+                        }
+                    )
+                    continue
                 warnings.append(
                     {
                         "node_id": node_id,
@@ -116,8 +128,10 @@ def validate_workflow_against_schemas(workflow: Dict[str, Any], object_info: Dic
         "valid": not errors,
         "errors": errors,
         "warnings": warnings,
+        "ui_metadata_inputs": ui_metadata_inputs,
         "error_count": len(errors),
         "warning_count": len(warnings),
+        "ui_metadata_count": len(ui_metadata_inputs),
     }
 
 
