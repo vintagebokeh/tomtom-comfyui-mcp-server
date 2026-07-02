@@ -4,7 +4,12 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from mcp.server.fastmcp import FastMCP
-from managers.live_canvas import latest_saved_canvas, queue_canvas_states
+from managers.live_canvas import (
+    canvas_event_subscription_info,
+    current_canvas_state,
+    execution_state,
+    selected_node_state,
+)
 from managers.node_schema import (
     normalize_node_schema,
     normalize_workflow_schemas,
@@ -61,54 +66,68 @@ def register_workflow_tools(
             fallback_to_latest_saved: Return the latest saved workflow graph
                 when no running/queued prompt graph is available.
         """
+        return current_canvas_state(
+            workflow_manager,
+            comfyui_client,
+            include_nodes=include_nodes,
+            fallback_to_latest_saved=fallback_to_latest_saved,
+        )
+
+    @mcp.tool()
+    def get_current_canvas(include_nodes: bool = True, fallback_to_latest_saved: bool = True) -> dict:
+        """Get the best available current canvas state.
+
+        Priority order is canvas bridge state, ComfyUI queue execution graph,
+        then latest saved workflow fallback. The response marks whether the
+        data is a true live editor canvas or a saved/queue fallback.
+        """
+        return current_canvas_state(
+            workflow_manager,
+            comfyui_client,
+            include_nodes=include_nodes,
+            fallback_to_latest_saved=fallback_to_latest_saved,
+        )
+
+    @mcp.tool()
+    def get_canvas_graph(include_nodes: bool = True, fallback_to_latest_saved: bool = True) -> dict:
+        """Return the current canvas graph from bridge/queue/saved fallback."""
+        return get_current_canvas(include_nodes=include_nodes, fallback_to_latest_saved=fallback_to_latest_saved)
+
+    @mcp.tool()
+    def refresh_canvas(include_nodes: bool = True, fallback_to_latest_saved: bool = True) -> dict:
+        """Refresh and return the best available canvas state.
+
+        Use this after saving in ComfyUI or after a future bridge reports a
+        canvas update.
+        """
+        return get_current_canvas(include_nodes=include_nodes, fallback_to_latest_saved=fallback_to_latest_saved)
+
+    @mcp.tool()
+    def get_selected_node() -> dict:
+        """Read the currently selected ComfyUI editor node from bridge state.
+
+        This requires the optional TomTom canvas bridge. Without the bridge,
+        ComfyUI's normal HTTP API does not expose editor selection state.
+        """
+        return selected_node_state(workflow_manager)
+
+    @mcp.tool()
+    def get_execution_state() -> dict:
+        """Read ComfyUI queue execution state: idle, queued, or running."""
         try:
-            queue_data = comfyui_client.get_queue()
-            canvases = queue_canvas_states(queue_data, include_nodes=include_nodes)
+            return execution_state(comfyui_client)
         except Exception as e:
-            logger.warning("Failed to read ComfyUI queue for live canvas state: %s", e)
-            queue_data = {}
-            canvases = []
+            logger.exception("Failed to get ComfyUI execution state")
+            return {"status": "error", "source": "comfyui_queue", "error": str(e)}
 
-        if canvases:
-            return {
-                "status": "success",
-                "source": "comfyui_queue",
-                "is_live_ui_canvas": False,
-                "is_live_execution_graph": True,
-                "message": "Read live graph data from ComfyUI running/pending queue.",
-                "running_count": len(queue_data.get("queue_running", [])) if isinstance(queue_data, dict) else None,
-                "pending_count": len(queue_data.get("queue_pending", [])) if isinstance(queue_data, dict) else None,
-                "canvases": canvases,
-            }
+    @mcp.tool()
+    def subscribe_canvas_events() -> dict:
+        """Return canvas bridge event subscription status.
 
-        if fallback_to_latest_saved:
-            saved_canvas = latest_saved_canvas(workflow_manager, include_nodes=include_nodes)
-            if saved_canvas:
-                return {
-                    "status": "success",
-                    "source": "latest_saved_workflow",
-                    "is_live_ui_canvas": False,
-                    "is_live_execution_graph": False,
-                    "message": (
-                        "No running or pending prompt graph is available. "
-                        "ComfyUI's HTTP API does not expose the unsaved editor canvas, "
-                        "so this returns the most recently saved workflow."
-                    ),
-                    "canvases": [saved_canvas],
-                }
-
-        return {
-            "status": "unavailable",
-            "source": "none",
-            "is_live_ui_canvas": False,
-            "is_live_execution_graph": False,
-            "message": (
-                "No running/pending prompt graph was available, and no saved workflow "
-                "fallback was returned. To inspect the editor canvas itself, ComfyUI "
-                "needs a frontend/plugin bridge or browser automation layer."
-            ),
-            "canvases": [],
-        }
+        This request/response MCP server cannot hold a streaming event channel
+        yet, so this returns bridge revision info and polling guidance.
+        """
+        return canvas_event_subscription_info(workflow_manager)
 
     @mcp.tool()
     def get_current_canvas_graph(include_nodes: bool = True, fallback_to_latest_saved: bool = True) -> dict:
