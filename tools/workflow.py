@@ -66,6 +66,25 @@ def register_workflow_tools(
         return result
 
     @mcp.tool()
+    def get_workflow_graph(workflow_id: str, include_nodes: bool = True) -> dict:
+        """Alias for inspect_workflow_graph.
+
+        This name is intentionally short and discoverable for clients that ask
+        to get or read the graph for a saved ComfyUI workflow.
+        """
+        return inspect_workflow_graph(workflow_id, include_nodes=include_nodes)
+
+    @mcp.tool()
+    def inspect_workflow(workflow_id: str, include_nodes: bool = True) -> dict:
+        """Alias for inspect_workflow_graph."""
+        return inspect_workflow_graph(workflow_id, include_nodes=include_nodes)
+
+    @mcp.tool()
+    def read_workflow_graph(workflow_id: str, include_nodes: bool = True) -> dict:
+        """Alias for inspect_workflow_graph."""
+        return inspect_workflow_graph(workflow_id, include_nodes=include_nodes)
+
+    @mcp.tool()
     def list_workflow_nodes(workflow_id: str, class_type: Optional[str] = None) -> dict:
         """List nodes in a saved ComfyUI workflow.
 
@@ -89,6 +108,11 @@ def register_workflow_tools(
             "nodes": nodes,
             "count": len(nodes),
         }
+
+    @mcp.tool()
+    def get_workflow_nodes(workflow_id: str, class_type: Optional[str] = None) -> dict:
+        """Alias for list_workflow_nodes."""
+        return list_workflow_nodes(workflow_id, class_type=class_type)
 
     @mcp.tool()
     def get_node_details(workflow_id: str, node_id: str, include_neighbors: bool = True) -> dict:
