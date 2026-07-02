@@ -1,7 +1,7 @@
 """Workflow management tools for ComfyUI MCP Server"""
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from mcp.server.fastmcp import FastMCP
 from managers.live_canvas import latest_saved_canvas, queue_canvas_states
@@ -9,6 +9,13 @@ from managers.node_schema import (
     normalize_node_schema,
     normalize_workflow_schemas,
     validate_workflow_against_schemas,
+)
+from managers.workflow_edit import (
+    WorkflowEditError,
+    copy_workflow,
+    diff_saved_workflows,
+    edit_workflow_copy,
+    plan_edits,
 )
 from managers.workflow_graph import WorkflowGraphInspector
 from tools.helpers import register_and_build_response
@@ -270,6 +277,81 @@ def register_workflow_tools(
             return {"workflow_id": workflow_id, "valid": False, "error": str(e)}
 
     @mcp.tool()
+    def plan_workflow_edit(workflow_id: str, edits: List[Dict[str, Any]]) -> dict:
+        """Dry-run workflow JSON edits and return a diff without writing files.
+
+        Supported operations:
+        - set_node_position: {node_id, position: [x, y]}
+        - set_node_title: {node_id, title}
+        - set_node_input: {node_id, input_name, value}
+        - set_node_ui_field: {node_id, field, value} for allowlisted UI fields
+        """
+        workflow = workflow_manager.load_workflow(workflow_id)
+        if not workflow:
+            return {"workflow_id": workflow_id, "error": f"Workflow '{workflow_id}' not found"}
+        try:
+            result = plan_edits(workflow, edits)
+            result["workflow_id"] = workflow_id
+            return result
+        except WorkflowEditError as e:
+            return {"workflow_id": workflow_id, "status": "rejected", "error": str(e)}
+
+    @mcp.tool()
+    def copy_workflow_for_edit(workflow_id: str, new_workflow_id: Optional[str] = None) -> dict:
+        """Copy a workflow to a new *_ai_edit* JSON file before editing."""
+        try:
+            return copy_workflow(workflow_manager, workflow_id, new_workflow_id=new_workflow_id)
+        except WorkflowEditError as e:
+            return {"workflow_id": workflow_id, "status": "rejected", "error": str(e)}
+        except Exception as e:
+            logger.exception("Failed to copy workflow %s", workflow_id)
+            return {"workflow_id": workflow_id, "status": "error", "error": str(e)}
+
+    @mcp.tool()
+    def edit_workflow_json(
+        workflow_id: str,
+        edits: List[Dict[str, Any]],
+        require_ai_edit_copy: bool = True,
+        validate_after: bool = True,
+    ) -> dict:
+        """Apply edits to a saved workflow copy and optionally validate it.
+
+        By default this refuses to edit workflows whose ID does not include
+        '_ai_edit', so agents practice on a copied workflow first.
+        """
+        try:
+            result = edit_workflow_copy(
+                workflow_manager,
+                workflow_id,
+                edits,
+                require_ai_edit_copy=require_ai_edit_copy,
+            )
+            if validate_after:
+                result["post_validation"] = _validate_graph_and_schema(workflow_id)
+            return result
+        except WorkflowEditError as e:
+            return {"workflow_id": workflow_id, "status": "rejected", "error": str(e)}
+        except Exception as e:
+            logger.exception("Failed to edit workflow %s", workflow_id)
+            return {"workflow_id": workflow_id, "status": "error", "error": str(e)}
+
+    @mcp.tool()
+    def diff_workflows(base_workflow_id: str, edited_workflow_id: str) -> dict:
+        """Compare two saved workflows and return compact node-level changes."""
+        try:
+            return diff_saved_workflows(workflow_manager, base_workflow_id, edited_workflow_id)
+        except WorkflowEditError as e:
+            return {"status": "rejected", "error": str(e)}
+        except Exception as e:
+            logger.exception("Failed to diff workflows %s and %s", base_workflow_id, edited_workflow_id)
+            return {"status": "error", "error": str(e)}
+
+    @mcp.tool()
+    def validate_workflow_edit(workflow_id: str) -> dict:
+        """Run graph and schema validation for an edited workflow."""
+        return _validate_graph_and_schema(workflow_id)
+
+    @mcp.tool()
     def trace_node_inputs(workflow_id: str, node_id: str, max_depth: int = 3) -> dict:
         """Trace upstream nodes that feed into a workflow node.
 
@@ -358,6 +440,27 @@ def register_workflow_tools(
             "workflow_id": workflow_id,
             "summary": inspector.summary(),
             "validation": inspector.validation(),
+        }
+
+    def _validate_graph_and_schema(workflow_id: str) -> dict:
+        workflow = workflow_manager.load_workflow(workflow_id)
+        if not workflow:
+            return {"workflow_id": workflow_id, "valid": False, "error": f"Workflow '{workflow_id}' not found"}
+
+        inspector = WorkflowGraphInspector(workflow)
+        graph_validation = inspector.validation()
+        try:
+            object_info = comfyui_client.get_object_info()
+            schema_validation = validate_workflow_against_schemas(workflow, object_info)
+        except Exception as e:
+            logger.warning("Schema validation failed for %s: %s", workflow_id, e)
+            schema_validation = {"valid": False, "error": str(e)}
+
+        return {
+            "workflow_id": workflow_id,
+            "valid": bool(graph_validation.get("valid")) and bool(schema_validation.get("valid")),
+            "graph_validation": graph_validation,
+            "schema_validation": schema_validation,
         }
 
     @mcp.tool()
