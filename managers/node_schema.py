@@ -159,6 +159,7 @@ def _normalize_input_schema(name: str, section: str, spec: Any) -> Dict[str, Any
     if options is None and isinstance(metadata.get("options"), list):
         options = metadata["options"]
 
+    public_metadata = {key: value for key, value in metadata.items() if key != "options"}
     normalized = {
         "name": str(name),
         "section": section,
@@ -172,7 +173,7 @@ def _normalize_input_schema(name: str, section: str, spec: Any) -> Dict[str, Any
         "options_count": len(options) if isinstance(options, list) else 0,
         "options_preview": options[:20] if isinstance(options, list) else None,
         "has_more_options": len(options) > 20 if isinstance(options, list) else False,
-        "raw_metadata": metadata,
+        "metadata": public_metadata,
     }
     return normalized
 
@@ -211,8 +212,8 @@ def _validate_literal_value(
 
     input_type = input_schema.get("type")
     if input_type == "COMBO" and input_schema.get("options_preview") is not None:
-        options = input_schema.get("raw_metadata", {}).get("options")
-        if isinstance(options, list) and value not in options:
+        options = input_schema.get("options_preview")
+        if not input_schema.get("has_more_options") and isinstance(options, list) and value not in options:
             errors.append(
                 {
                     "node_id": node_id,

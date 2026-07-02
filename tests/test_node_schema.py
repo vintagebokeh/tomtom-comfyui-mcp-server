@@ -55,6 +55,7 @@ def test_normalize_node_schema_extracts_inputs_outputs_and_metadata():
     assert schema["inputs"][0]["min"] == 1
     assert schema["inputs"][1]["type"] == "COMBO"
     assert schema["inputs"][1]["options_preview"] == ["euler", "ddim"]
+    assert "options" not in schema["inputs"][1]["metadata"]
     assert schema["outputs"][0]["type"] == "LATENT"
 
 
