@@ -212,9 +212,12 @@ class WorkflowGraphInspector:
     def _find_output_nodes(self) -> List[Dict[str, Any]]:
         output_nodes = []
         for node_id, node in self.nodes.items():
+            if self.outgoing.get(node_id):
+                continue
             class_type = str(node.get("class_type", ""))
             lower_class = class_type.lower()
-            if any(hint in lower_class for hint in OUTPUT_CLASS_HINTS) and "loader" not in lower_class:
+            is_loader = "loader" in lower_class or lower_class.startswith("load")
+            if any(hint in lower_class for hint in OUTPUT_CLASS_HINTS) and not is_loader:
                 output_nodes.append(
                     {
                         "id": node_id,

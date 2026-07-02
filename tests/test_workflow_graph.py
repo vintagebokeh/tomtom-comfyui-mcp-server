@@ -35,6 +35,26 @@ def test_inspector_builds_edges_and_summary():
     assert summary["output_nodes"][0]["id"] == "4"
 
 
+def test_output_nodes_are_terminal_output_like_nodes():
+    workflow = {
+        "3": {
+            "class_type": "LoadAudio",
+            "_meta": {"title": "Load Audio"},
+            "inputs": {"audio": "input.wav"},
+        },
+        "4": {
+            "class_type": "PreviewAudio",
+            "_meta": {"title": "Preview Audio"},
+            "inputs": {"audio": ["3", 0]},
+        },
+    }
+    inspector = WorkflowGraphInspector(workflow)
+
+    output_nodes = inspector.summary()["output_nodes"]
+
+    assert [node["id"] for node in output_nodes] == ["4"]
+
+
 def test_inspector_reports_node_details():
     inspector = WorkflowGraphInspector(sample_workflow())
 
