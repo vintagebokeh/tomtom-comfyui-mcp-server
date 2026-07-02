@@ -5,6 +5,11 @@ from typing import Any, Dict, Optional
 
 from mcp.server.fastmcp import FastMCP
 from managers.live_canvas import latest_saved_canvas, queue_canvas_states
+from managers.node_schema import (
+    normalize_node_schema,
+    normalize_workflow_schemas,
+    validate_workflow_against_schemas,
+)
 from managers.workflow_graph import WorkflowGraphInspector
 from tools.helpers import register_and_build_response
 
@@ -211,6 +216,58 @@ def register_workflow_tools(
             return {"error": f"Node '{node_id}' not found in workflow '{workflow_id}'"}
         details["workflow_id"] = workflow_id
         return details
+
+    @mcp.tool()
+    def get_node_schema(class_type: str) -> dict:
+        """Get ComfyUI input/output schema for one node class.
+
+        Returns normalized input sections, types, defaults, min/max, enum
+        previews, output types, category, and python module from ComfyUI's
+        /object_info endpoint.
+        """
+        try:
+            object_info = comfyui_client.get_object_info(class_type)
+            if class_type not in object_info:
+                return {"class_type": class_type, "available": False, "error": "Node class not found in ComfyUI object_info"}
+            return normalize_node_schema(class_type, object_info[class_type])
+        except Exception as e:
+            logger.exception("Failed to get node schema for %s", class_type)
+            return {"class_type": class_type, "available": False, "error": str(e)}
+
+    @mcp.tool()
+    def inspect_workflow_schemas(workflow_id: str) -> dict:
+        """Inspect input/output schemas for every node class used by a workflow."""
+        workflow = workflow_manager.load_workflow(workflow_id)
+        if not workflow:
+            return {"error": f"Workflow '{workflow_id}' not found"}
+        try:
+            object_info = comfyui_client.get_object_info()
+            result = normalize_workflow_schemas(workflow, object_info)
+            result["workflow_id"] = workflow_id
+            return result
+        except Exception as e:
+            logger.exception("Failed to inspect workflow schemas for %s", workflow_id)
+            return {"workflow_id": workflow_id, "error": str(e)}
+
+    @mcp.tool()
+    def validate_workflow_schema(workflow_id: str) -> dict:
+        """Validate a workflow against ComfyUI node class schemas.
+
+        This catches missing node classes, missing required inputs, undeclared
+        inputs, and basic literal value range/enum issues. It complements
+        validate_workflow_graph, which validates graph connectivity.
+        """
+        workflow = workflow_manager.load_workflow(workflow_id)
+        if not workflow:
+            return {"error": f"Workflow '{workflow_id}' not found"}
+        try:
+            object_info = comfyui_client.get_object_info()
+            result = validate_workflow_against_schemas(workflow, object_info)
+            result["workflow_id"] = workflow_id
+            return result
+        except Exception as e:
+            logger.exception("Failed to validate workflow schema for %s", workflow_id)
+            return {"workflow_id": workflow_id, "valid": False, "error": str(e)}
 
     @mcp.tool()
     def trace_node_inputs(workflow_id: str, node_id: str, max_depth: int = 3) -> dict:

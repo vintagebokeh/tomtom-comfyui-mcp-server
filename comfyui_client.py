@@ -19,6 +19,17 @@ class ComfyUIClient:
         """Re-fetch available models and update available_models list."""
         self.available_models = self._get_available_models()
 
+    def get_object_info(self, class_type: Optional[str] = None) -> Dict[str, Any]:
+        """Fetch ComfyUI node schema information from /object_info."""
+        try:
+            path = f"/object_info/{class_type}" if class_type else "/object_info"
+            response = requests.get(f"{self.base_url}{path}", timeout=15)
+            response.raise_for_status()
+            return response.json()
+        except requests.RequestException as e:
+            logger.error(f"Failed to get object_info: {e}")
+            raise Exception(f"Failed to get object_info: {e}")
+    
     def _get_available_models(self):
         """Fetch list of available checkpoint models from ComfyUI"""
         try:
