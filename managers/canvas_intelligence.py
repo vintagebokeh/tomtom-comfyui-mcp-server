@@ -188,6 +188,7 @@ def live_canvas_suggestions(workflow_manager, comfyui_client, limit: int = 20) -
             "error_count": schema_validation.get("error_count", len(schema_validation.get("errors", []))),
             "warning_count": schema_validation.get("warning_count", len(schema_validation.get("warnings", []))),
             "ui_metadata_count": schema_validation.get("ui_metadata_count", 0),
+            "nested_schema_input_count": schema_validation.get("nested_schema_input_count", 0),
         },
         "suggestion_count": len(suggestions),
         "suggestions": suggestions[:limit],

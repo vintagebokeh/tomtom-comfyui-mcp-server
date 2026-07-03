@@ -71,6 +71,7 @@ def validate_workflow_against_schemas(workflow: Dict[str, Any], object_info: Dic
     errors: List[Dict[str, Any]] = []
     warnings: List[Dict[str, Any]] = []
     ui_metadata_inputs: List[Dict[str, Any]] = []
+    nested_schema_inputs: List[Dict[str, Any]] = []
 
     for node_id, node in _iter_nodes(workflow):
         class_type = str(node.get("class_type", ""))
@@ -89,7 +90,7 @@ def validate_workflow_against_schemas(workflow: Dict[str, Any], object_info: Dic
         for input_schema in schema["inputs"]:
             if input_schema["section"] != "required":
                 continue
-            if input_schema["name"] not in actual_inputs:
+            if input_schema["name"] not in actual_inputs and not _has_nested_child_input(input_schema["name"], actual_inputs):
                 errors.append(
                     {
                         "node_id": node_id,
@@ -113,6 +114,19 @@ def validate_workflow_against_schemas(workflow: Dict[str, Any], object_info: Dic
                         }
                     )
                     continue
+                parent_schema = _declared_parent_schema(input_name, declared_inputs)
+                if parent_schema:
+                    nested_schema_inputs.append(
+                        {
+                            "node_id": node_id,
+                            "class_type": class_type,
+                            "input_name": input_name,
+                            "parent_input": parent_schema["name"],
+                            "parent_type": parent_schema.get("type"),
+                            "value_type": type(value).__name__,
+                        }
+                    )
+                    continue
                 warnings.append(
                     {
                         "node_id": node_id,
@@ -129,9 +143,11 @@ def validate_workflow_against_schemas(workflow: Dict[str, Any], object_info: Dic
         "errors": errors,
         "warnings": warnings,
         "ui_metadata_inputs": ui_metadata_inputs,
+        "nested_schema_inputs": nested_schema_inputs,
         "error_count": len(errors),
         "warning_count": len(warnings),
         "ui_metadata_count": len(ui_metadata_inputs),
+        "nested_schema_input_count": len(nested_schema_inputs),
     }
 
 
@@ -270,6 +286,23 @@ def _value_at(values: Any, index: int, default: Any) -> Any:
     if isinstance(values, list) and index < len(values):
         return values[index]
     return default
+
+
+def _declared_parent_schema(input_name: str, declared_inputs: Dict[str, Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if "." not in input_name:
+        return None
+    parts = input_name.split(".")
+    while len(parts) > 1:
+        parts.pop()
+        parent_name = ".".join(parts)
+        if parent_name in declared_inputs:
+            return declared_inputs[parent_name]
+    return None
+
+
+def _has_nested_child_input(parent_name: str, actual_inputs: Dict[str, Any]) -> bool:
+    prefix = f"{parent_name}."
+    return any(str(input_name).startswith(prefix) for input_name in actual_inputs)
 
 
 def _is_link(value: Any) -> bool:
