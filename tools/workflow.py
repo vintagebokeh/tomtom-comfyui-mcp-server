@@ -13,6 +13,11 @@ from managers.live_canvas import (
     execution_state,
     selected_node_state,
 )
+from managers.canvas_intelligence import (
+    explain_selected_canvas_node,
+    live_canvas_graph_insight,
+    live_canvas_suggestions,
+)
 from managers.node_schema import (
     normalize_node_schema,
     normalize_workflow_schemas,
@@ -173,6 +178,35 @@ def register_workflow_tools(
             base_revision=base_revision,
             target_revision=target_revision,
         )
+
+    @mcp.tool()
+    def explain_selected_node(max_depth: int = 2) -> dict:
+        """Explain the currently selected live ComfyUI canvas node.
+
+        This is read-only and uses the canvas bridge, graph neighbors, and
+        ComfyUI object_info schema to explain what the selected node receives,
+        emits, and how it fits into the workflow.
+        """
+        return explain_selected_canvas_node(workflow_manager, comfyui_client, max_depth=max_depth)
+
+    @mcp.tool()
+    def get_live_graph_insight(max_sections: int = 8) -> dict:
+        """Summarize the current live canvas into graph sections and domains.
+
+        This is read-only. It helps identify entry nodes, terminal nodes,
+        connected sections, dominant classes, and broad workflow domains.
+        """
+        return live_canvas_graph_insight(workflow_manager, comfyui_client, max_sections=max_sections)
+
+    @mcp.tool()
+    def suggest_canvas_improvements(limit: int = 20) -> dict:
+        """Suggest read-only improvements or points of attention for the live canvas.
+
+        Suggestions include graph issues, schema warnings, isolated nodes,
+        high-fanout hub nodes, and explicit PARAM_ editable bindings. This
+        tool does not edit the canvas.
+        """
+        return live_canvas_suggestions(workflow_manager, comfyui_client, limit=limit)
 
     @mcp.tool()
     def get_current_canvas_graph(include_nodes: bool = True, fallback_to_latest_saved: bool = True) -> dict:
