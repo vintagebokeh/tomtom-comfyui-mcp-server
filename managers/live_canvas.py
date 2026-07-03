@@ -548,7 +548,7 @@ def _latest_workflow_path(workflows_dir: Path) -> Optional[Path]:
     paths = [
         path
         for path in Path(workflows_dir).glob("*.json")
-        if not path.name.endswith(".meta.json")
+        if not path.name.endswith(".meta.json") and not path.name.startswith(".")
     ]
     if not paths:
         return None

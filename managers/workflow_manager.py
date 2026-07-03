@@ -43,6 +43,7 @@ PLACEHOLDER_DESCRIPTIONS = {
 DEFAULT_OUTPUT_KEYS = ("images", "image", "gifs", "gif")
 AUDIO_OUTPUT_KEYS = ("audio", "audios", "sound", "files")
 VIDEO_OUTPUT_KEYS = ("videos", "video", "mp4", "mov", "webm")
+SYSTEM_JSON_PREFIXES = (".",)
 
 
 class WorkflowManager:
@@ -92,8 +93,7 @@ class WorkflowManager:
             return catalog
         
         for workflow_path in sorted(self.workflows_dir.glob("*.json")):
-            # Skip metadata files
-            if workflow_path.name.endswith(".meta.json"):
+            if self._should_skip_workflow_file(workflow_path):
                 continue
             
             workflow_id = workflow_path.stem
@@ -102,6 +102,9 @@ class WorkflowManager:
                     workflow = json.load(f)
             except (json.JSONDecodeError, IOError) as e:
                 logger.warning(f"Skipping {workflow_path.name}: {e}")
+                continue
+            if not self._looks_like_workflow(workflow):
+                logger.info("Skipping %s because it is not a ComfyUI workflow graph", workflow_path.name)
                 continue
             
             # Load metadata
@@ -289,11 +292,16 @@ class WorkflowManager:
             return definitions
 
         for workflow_path in sorted(self.workflows_dir.glob("*.json")):
+            if self._should_skip_workflow_file(workflow_path):
+                continue
             try:
                 with open(workflow_path, "r", encoding="utf-8") as handle:
                     workflow = json.load(handle)
             except json.JSONDecodeError as exc:
                 logger.error("Skipping workflow %s due to JSON error: %s", workflow_path.name, exc)
+                continue
+            if not self._looks_like_workflow(workflow):
+                logger.info("Skipping %s because it is not a ComfyUI workflow graph", workflow_path.name)
                 continue
 
             parameters = self._extract_parameters(workflow)
@@ -328,6 +336,18 @@ class WorkflowManager:
             definitions.append(definition)
 
         return definitions
+
+    def _should_skip_workflow_file(self, workflow_path: Path) -> bool:
+        name = workflow_path.name
+        return name.endswith(".meta.json") or name.startswith(SYSTEM_JSON_PREFIXES)
+
+    def _looks_like_workflow(self, workflow: Any) -> bool:
+        if not isinstance(workflow, dict):
+            return False
+        return any(
+            isinstance(node, dict) and isinstance(node.get("inputs"), dict)
+            for node in workflow.values()
+        )
 
     def render_workflow(self, definition: WorkflowToolDefinition, provided_params: Dict[str, Any], defaults_manager: Optional["DefaultsManager"] = None):
         from managers.defaults_manager import DefaultsManager

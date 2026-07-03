@@ -91,6 +91,25 @@ class TestWorkflowCacheMtime:
         assert loaded1 == loaded2
         assert loaded1 is not loaded2  # deep copy
 
+    def test_hidden_bridge_state_file_is_not_loaded_as_workflow(self, tmp_path):
+        """Bridge state JSON in the workflow dir should not crash workflow loading."""
+        wf_dir = tmp_path / "workflows"
+        wf_dir.mkdir()
+
+        (wf_dir / ".tomtom_canvas_bridge.json").write_text(
+            json.dumps({"bridge_version": "0.1", "workflow_name": "Live Canvas", "workflow": {}}),
+            encoding="utf-8",
+        )
+        (wf_dir / "real_tool.json").write_text(
+            json.dumps({"1": {"inputs": {"prompt": "PARAM_PROMPT"}, "class_type": "PreviewAny"}}),
+            encoding="utf-8",
+        )
+
+        mgr = WorkflowManager(wf_dir)
+
+        assert len(mgr.tool_definitions) == 1
+        assert mgr.tool_definitions[0].workflow_id == "real_tool"
+
 
 # ---------------------------------------------------------------------------
 # Bug 2 – Model validation fires on workflows without a PARAM_MODEL
