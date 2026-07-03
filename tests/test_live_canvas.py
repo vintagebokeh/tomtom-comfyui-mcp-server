@@ -3,7 +3,10 @@ from pathlib import Path
 
 from managers.live_canvas import (
     canvas_event_subscription_info,
+    canvas_snapshot,
+    canvas_snapshot_history,
     current_canvas_state,
+    diff_canvas_snapshots,
     execution_state,
     latest_saved_canvas,
     queue_canvas_states,
@@ -143,3 +146,67 @@ def test_canvas_event_subscription_info_without_bridge(tmp_path, monkeypatch):
 
     assert state["status"] == "not_configured"
     assert "refresh_canvas" in state["poll_tools"]
+
+
+def write_snapshot(history_dir: Path, revision: int, workflow: dict, selected_node_id: str | None = None):
+    payload = {
+        "snapshot_id": f"rev-{revision}",
+        "revision": revision,
+        "updated_at": f"2026-07-03T00:00:0{revision}Z",
+        "workflow_id": "live_workflow",
+        "workflow_name": "Live Workflow",
+        "selected_node_id": selected_node_id,
+        "workflow": workflow,
+    }
+    path = history_dir / f"rev-{revision}.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def test_canvas_snapshot_history_lists_recent_snapshots(tmp_path, monkeypatch):
+    history_dir = tmp_path / "history"
+    history_dir.mkdir()
+    monkeypatch.setenv("COMFY_MCP_CANVAS_BRIDGE_HISTORY_DIR", str(history_dir))
+    write_snapshot(history_dir, 1, sample_workflow(), "1")
+    write_snapshot(history_dir, 2, sample_workflow(), "2")
+
+    history = canvas_snapshot_history(FakeWorkflowManager(tmp_path), limit=10)
+
+    assert history["status"] == "success"
+    assert history["count"] == 2
+    assert history["snapshots"][0]["revision"] == 1
+    assert history["snapshots"][1]["revision"] == 2
+
+
+def test_canvas_snapshot_gets_latest_without_full_workflow(tmp_path, monkeypatch):
+    history_dir = tmp_path / "history"
+    history_dir.mkdir()
+    monkeypatch.setenv("COMFY_MCP_CANVAS_BRIDGE_HISTORY_DIR", str(history_dir))
+    write_snapshot(history_dir, 1, sample_workflow(), "1")
+    write_snapshot(history_dir, 2, sample_workflow(), "2")
+
+    snapshot = canvas_snapshot(FakeWorkflowManager(tmp_path))
+
+    assert snapshot["status"] == "success"
+    assert snapshot["revision"] == 2
+    assert snapshot["selected_node"]["id"] == "2"
+    assert "workflow" not in snapshot
+
+
+def test_diff_canvas_snapshots_reports_node_changes(tmp_path, monkeypatch):
+    history_dir = tmp_path / "history"
+    history_dir.mkdir()
+    monkeypatch.setenv("COMFY_MCP_CANVAS_BRIDGE_HISTORY_DIR", str(history_dir))
+    first = sample_workflow()
+    second = dict(sample_workflow())
+    second["3"] = {"class_type": "SaveAudio", "inputs": {"audio": ["2", 0]}}
+    write_snapshot(history_dir, 1, first, "1")
+    write_snapshot(history_dir, 2, second, "3")
+
+    diff = diff_canvas_snapshots(FakeWorkflowManager(tmp_path), base_revision=1, target_revision=2)
+
+    assert diff["status"] == "success"
+    assert diff["node_count_delta"] == 1
+    assert diff["edge_count_delta"] == 1
+    assert diff["added_node_ids"] == ["3"]
+    assert diff["selected_node_changed"] is True

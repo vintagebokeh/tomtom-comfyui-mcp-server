@@ -23,7 +23,11 @@ NODE_DISPLAY_NAME_MAPPINGS = {}
 
 BRIDGE_STATE_ENV = "COMFY_MCP_CANVAS_BRIDGE_STATE"
 BRIDGE_STATE_ENV_LEGACY = "TOMTOM_CANVAS_BRIDGE_FILE"
+BRIDGE_HISTORY_ENV = "COMFY_MCP_CANVAS_BRIDGE_HISTORY_DIR"
+BRIDGE_HISTORY_LIMIT_ENV = "COMFY_MCP_CANVAS_BRIDGE_HISTORY_LIMIT"
 DEFAULT_BRIDGE_RELATIVE = Path("Documents") / "ComfyUI" / "user" / "default" / "workflows" / ".tomtom_canvas_bridge.json"
+DEFAULT_HISTORY_DIR_NAME = ".tomtom_canvas_bridge_history"
+DEFAULT_HISTORY_LIMIT = 500
 
 
 def _bridge_state_path() -> Path:
@@ -31,6 +35,20 @@ def _bridge_state_path() -> Path:
     if configured:
         return Path(configured).expanduser().resolve()
     return (Path.home() / DEFAULT_BRIDGE_RELATIVE).resolve()
+
+
+def _bridge_history_dir() -> Path:
+    configured = os.environ.get(BRIDGE_HISTORY_ENV)
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return _bridge_state_path().parent / DEFAULT_HISTORY_DIR_NAME
+
+
+def _history_limit() -> int:
+    try:
+        return max(1, int(os.environ.get(BRIDGE_HISTORY_LIMIT_ENV, DEFAULT_HISTORY_LIMIT)))
+    except ValueError:
+        return DEFAULT_HISTORY_LIMIT
 
 
 def _json_default(value: Any) -> str:
@@ -45,6 +63,38 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
         encoding="utf-8",
     )
     temp_path.replace(path)
+
+
+def _snapshot_id(payload: dict[str, Any]) -> str:
+    revision = payload.get("revision")
+    received = str(payload.get("server_received_at") or time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()))
+    safe_received = "".join(char if char.isalnum() else "-" for char in received).strip("-")
+    safe_revision = "".join(char if char.isalnum() or char in ("-", "_") else "-" for char in str(revision or "unknown"))
+    return f"rev-{safe_revision}-{safe_received}"
+
+
+def _write_history_snapshot(payload: dict[str, Any]) -> Path:
+    history_dir = _bridge_history_dir()
+    snapshot_id = _snapshot_id(payload)
+    snapshot_path = history_dir / f"{snapshot_id}.json"
+    snapshot_payload = dict(payload)
+    snapshot_payload["snapshot_id"] = snapshot_id
+    snapshot_payload["snapshot_path"] = str(snapshot_path)
+    _atomic_write_json(snapshot_path, snapshot_payload)
+    _prune_history(history_dir, keep=_history_limit())
+    return snapshot_path
+
+
+def _prune_history(history_dir: Path, keep: int) -> None:
+    try:
+        snapshots = sorted(history_dir.glob("rev-*.json"), key=lambda path: path.stat().st_mtime, reverse=True)
+    except OSError:
+        return
+    for old_path in snapshots[keep:]:
+        try:
+            old_path.unlink()
+        except OSError:
+            pass
 
 
 def _safe_payload(payload: Any) -> dict[str, Any]:
@@ -68,10 +118,12 @@ async def update_canvas_bridge_state(request: web.Request) -> web.Response:
     payload = _safe_payload(await request.json())
     bridge_path = _bridge_state_path()
     _atomic_write_json(bridge_path, payload)
+    snapshot_path = _write_history_snapshot(payload)
     return web.json_response(
         {
             "ok": True,
             "bridge_path": str(bridge_path),
+            "snapshot_path": str(snapshot_path),
             "revision": payload.get("revision"),
             "node_count": len(payload.get("workflow") or {}),
         }

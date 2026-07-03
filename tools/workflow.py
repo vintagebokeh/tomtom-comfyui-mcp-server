@@ -6,7 +6,10 @@ from typing import Any, Dict, List, Optional
 from mcp.server.fastmcp import FastMCP
 from managers.live_canvas import (
     canvas_event_subscription_info,
+    canvas_snapshot,
+    canvas_snapshot_history,
     current_canvas_state,
+    diff_canvas_snapshots as diff_canvas_snapshot_history,
     execution_state,
     selected_node_state,
 )
@@ -128,6 +131,48 @@ def register_workflow_tools(
         yet, so this returns bridge revision info and polling guidance.
         """
         return canvas_event_subscription_info(workflow_manager)
+
+    @mcp.tool()
+    def list_canvas_snapshots(limit: int = 20) -> dict:
+        """List recent live canvas bridge snapshots.
+
+        Use this to see canvas history revisions without returning full graph
+        payloads.
+        """
+        return canvas_snapshot_history(workflow_manager, limit=limit)
+
+    @mcp.tool()
+    def get_canvas_snapshot(
+        revision: Optional[int] = None,
+        snapshot_id: Optional[str] = None,
+        include_workflow: bool = False,
+    ) -> dict:
+        """Read one saved live canvas snapshot by revision, id, or latest.
+
+        Args:
+            revision: Optional bridge revision number.
+            snapshot_id: Optional snapshot file id.
+            include_workflow: Include full workflow and UI workflow payloads.
+        """
+        return canvas_snapshot(
+            workflow_manager,
+            revision=revision,
+            snapshot_id=snapshot_id,
+            include_workflow=include_workflow,
+        )
+
+    @mcp.tool()
+    def diff_canvas_snapshots(base_revision: Optional[int] = None, target_revision: Optional[int] = None) -> dict:
+        """Diff two live canvas snapshots by revision.
+
+        If target_revision is omitted, the latest snapshot is used. If
+        base_revision is omitted, the previous snapshot before target is used.
+        """
+        return diff_canvas_snapshot_history(
+            workflow_manager,
+            base_revision=base_revision,
+            target_revision=target_revision,
+        )
 
     @mcp.tool()
     def get_current_canvas_graph(include_nodes: bool = True, fallback_to_latest_saved: bool = True) -> dict:

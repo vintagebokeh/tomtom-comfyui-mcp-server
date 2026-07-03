@@ -11,7 +11,9 @@ from managers.workflow_graph import WorkflowGraphInspector
 
 
 BRIDGE_STATE_ENV = "COMFY_MCP_CANVAS_BRIDGE_STATE"
+BRIDGE_HISTORY_ENV = "COMFY_MCP_CANVAS_BRIDGE_HISTORY_DIR"
 DEFAULT_BRIDGE_STATE_NAME = ".tomtom_canvas_bridge.json"
+DEFAULT_BRIDGE_HISTORY_DIR_NAME = ".tomtom_canvas_bridge_history"
 
 
 def current_canvas_state(workflow_manager, comfyui_client, include_nodes: bool = True, fallback_to_latest_saved: bool = True) -> Dict[str, Any]:
@@ -196,6 +198,7 @@ def canvas_event_subscription_info(workflow_manager) -> Dict[str, Any]:
                 "bridge extension is installed."
             ),
             "bridge_path": str(bridge_path),
+            "history_dir": str(_bridge_history_dir(workflow_manager.workflows_dir)),
             "poll_tools": ["get_current_canvas", "refresh_canvas"],
         }
     return {
@@ -203,9 +206,119 @@ def canvas_event_subscription_info(workflow_manager) -> Dict[str, Any]:
         "source": "canvas_bridge",
         "message": "Bridge state is available. Poll refresh_canvas and compare revision for updates.",
         "bridge_path": str(bridge_path),
+        "history_dir": str(_bridge_history_dir(workflow_manager.workflows_dir)),
         "revision": bridge.get("revision"),
         "updated_at": bridge.get("updated_at"),
         "poll_tools": ["refresh_canvas"],
+    }
+
+
+def canvas_snapshot_history(workflow_manager, limit: int = 20) -> Dict[str, Any]:
+    """List recent canvas bridge snapshots without returning full workflows."""
+    history_dir = _bridge_history_dir(workflow_manager.workflows_dir)
+    snapshots = _history_snapshot_paths(history_dir)
+    limit = max(1, min(int(limit), 100))
+    entries = []
+    for path in snapshots[:limit]:
+        payload = _read_snapshot_payload(path)
+        if not payload:
+            continue
+        entries.append(_snapshot_summary(path, payload))
+    return {
+        "status": "success",
+        "source": "canvas_bridge_history",
+        "history_dir": str(history_dir),
+        "count": len(entries),
+        "total_available": len(snapshots),
+        "snapshots": entries,
+    }
+
+
+def canvas_snapshot(workflow_manager, revision: Optional[int] = None, snapshot_id: Optional[str] = None, include_workflow: bool = False) -> Dict[str, Any]:
+    """Get one canvas snapshot by revision, snapshot id, or latest."""
+    path = _find_snapshot_path(workflow_manager.workflows_dir, revision=revision, snapshot_id=snapshot_id)
+    if not path:
+        return {
+            "status": "not_found",
+            "source": "canvas_bridge_history",
+            "revision": revision,
+            "snapshot_id": snapshot_id,
+            "message": "No matching canvas snapshot was found.",
+        }
+    payload = _read_snapshot_payload(path)
+    if not payload:
+        return {
+            "status": "error",
+            "source": "canvas_bridge_history",
+            "snapshot_path": str(path),
+            "message": "Canvas snapshot could not be parsed.",
+        }
+    result = _snapshot_summary(path, payload)
+    result.update(
+        {
+            "status": "success",
+            "source": "canvas_bridge_history",
+            "selected_node": _selected_node_payload(payload, _extract_bridge_workflow(payload)),
+            "viewport": payload.get("viewport"),
+        }
+    )
+    if include_workflow:
+        result["workflow"] = _extract_bridge_workflow(payload) or {}
+        result["ui_workflow"] = payload.get("ui_workflow")
+    return result
+
+
+def diff_canvas_snapshots(workflow_manager, base_revision: Optional[int] = None, target_revision: Optional[int] = None) -> Dict[str, Any]:
+    """Diff two canvas snapshots by revision.
+
+    If target_revision is omitted, the latest snapshot is used. If
+    base_revision is omitted, the previous snapshot before the target is used.
+    """
+    history_dir = _bridge_history_dir(workflow_manager.workflows_dir)
+    snapshots = _load_history_payloads(history_dir)
+    if len(snapshots) < 2:
+        return {
+            "status": "not_available",
+            "source": "canvas_bridge_history",
+            "message": "At least two canvas snapshots are required to diff history.",
+            "snapshot_count": len(snapshots),
+        }
+
+    target_index = _snapshot_index_by_revision(snapshots, target_revision) if target_revision is not None else len(snapshots) - 1
+    if target_index is None:
+        return {"status": "not_found", "source": "canvas_bridge_history", "message": "Target revision was not found."}
+
+    if base_revision is not None:
+        base_index = _snapshot_index_by_revision(snapshots, base_revision)
+    else:
+        base_index = target_index - 1
+    if base_index is None or base_index < 0:
+        return {"status": "not_found", "source": "canvas_bridge_history", "message": "Base revision was not found."}
+
+    base_path, base = snapshots[base_index]
+    target_path, target = snapshots[target_index]
+    base_workflow = _extract_bridge_workflow(base) or {}
+    target_workflow = _extract_bridge_workflow(target) or {}
+    base_nodes = set(str(node_id) for node_id in base_workflow)
+    target_nodes = set(str(node_id) for node_id in target_workflow)
+    common_nodes = base_nodes & target_nodes
+    changed_nodes = [
+        node_id
+        for node_id in sorted(common_nodes, key=_sort_node_id)
+        if base_workflow.get(node_id) != target_workflow.get(node_id)
+    ]
+    return {
+        "status": "success",
+        "source": "canvas_bridge_history",
+        "base": _snapshot_summary(base_path, base),
+        "target": _snapshot_summary(target_path, target),
+        "node_count_delta": len(target_nodes) - len(base_nodes),
+        "edge_count_delta": _edge_count(target_workflow) - _edge_count(base_workflow),
+        "added_node_ids": sorted(target_nodes - base_nodes, key=_sort_node_id),
+        "removed_node_ids": sorted(base_nodes - target_nodes, key=_sort_node_id),
+        "changed_node_ids": changed_nodes[:100],
+        "changed_node_count": len(changed_nodes),
+        "selected_node_changed": base.get("selected_node_id") != target.get("selected_node_id"),
     }
 
 
@@ -274,6 +387,95 @@ def _bridge_state_path(workflows_dir: Path) -> Path:
     if configured:
         return Path(configured).expanduser().resolve()
     return (Path(workflows_dir) / DEFAULT_BRIDGE_STATE_NAME).resolve()
+
+
+def _bridge_history_dir(workflows_dir: Path) -> Path:
+    configured = os.environ.get(BRIDGE_HISTORY_ENV)
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return _bridge_state_path(workflows_dir).parent / DEFAULT_BRIDGE_HISTORY_DIR_NAME
+
+
+def _history_snapshot_paths(history_dir: Path) -> List[Path]:
+    if not history_dir.exists():
+        return []
+    return sorted(history_dir.glob("rev-*.json"), key=lambda path: (path.stat().st_mtime, path.name))
+
+
+def _read_snapshot_payload(path: Path) -> Optional[Dict[str, Any]]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _snapshot_summary(path: Path, payload: Dict[str, Any]) -> Dict[str, Any]:
+    workflow = _extract_bridge_workflow(payload) or {}
+    return {
+        "snapshot_id": payload.get("snapshot_id") or path.stem,
+        "snapshot_path": str(path),
+        "revision": payload.get("revision"),
+        "updated_at": payload.get("updated_at"),
+        "server_received_at": payload.get("server_received_at"),
+        "workflow_id": payload.get("workflow_id"),
+        "workflow_name": payload.get("workflow_name") or payload.get("name"),
+        "selected_node_id": payload.get("selected_node_id"),
+        "node_count": len(workflow),
+        "edge_count": _edge_count(workflow),
+    }
+
+
+def _find_snapshot_path(workflows_dir: Path, revision: Optional[int] = None, snapshot_id: Optional[str] = None) -> Optional[Path]:
+    snapshots = _history_snapshot_paths(_bridge_history_dir(workflows_dir))
+    if not snapshots:
+        return None
+    if snapshot_id:
+        for path in snapshots:
+            if path.stem == snapshot_id or path.name == snapshot_id:
+                return path
+    if revision is not None:
+        for path in reversed(snapshots):
+            payload = _read_snapshot_payload(path)
+            if payload and payload.get("revision") == revision:
+                return path
+        return None
+    return snapshots[-1]
+
+
+def _load_history_payloads(history_dir: Path) -> List[Tuple[Path, Dict[str, Any]]]:
+    loaded = []
+    for path in _history_snapshot_paths(history_dir):
+        payload = _read_snapshot_payload(path)
+        if payload:
+            loaded.append((path, payload))
+    return loaded
+
+
+def _snapshot_index_by_revision(snapshots: List[Tuple[Path, Dict[str, Any]]], revision: Optional[int]) -> Optional[int]:
+    for index, (_, payload) in enumerate(snapshots):
+        if payload.get("revision") == revision:
+            return index
+    return None
+
+
+def _edge_count(workflow: Dict[str, Any]) -> int:
+    count = 0
+    for node in workflow.values():
+        if not isinstance(node, dict):
+            continue
+        inputs = node.get("inputs", {})
+        if not isinstance(inputs, dict):
+            continue
+        count += sum(1 for value in inputs.values() if isinstance(value, list) and len(value) >= 2)
+    return count
+
+
+def _sort_node_id(node_id: str) -> Tuple[int, str]:
+    try:
+        return (0, f"{int(node_id):010d}")
+    except (TypeError, ValueError):
+        return (1, str(node_id))
 
 
 def _extract_bridge_workflow(state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
